@@ -237,6 +237,143 @@ deserialise_identity2(struct sshbuf *ids, struct sshkey **keyp, char **commentp)
 }
 
 /*
+ * Check support of extension message 'request_identities_filtered@trezor.io'
+ */
+int
+ssh_check_identities_filtered_support(int sock)
+{
+	int r;
+	u_char type;
+        char *extension_type = "query";
+	struct sshbuf *msg;
+	struct sshbuf *c;
+        char *f = "request_identities_filtered@trezor.io";
+
+	/*
+	 * Send a message to the agent requesting for list of
+	 * supported extension messages
+	 */
+	if ((msg = sshbuf_new()) == NULL)
+		return SSH_ERR_ALLOC_FAIL;
+	if ((r = sshbuf_put_u8(msg, SSH_AGENTC_EXTENSION)) != 0 ||
+            (r = sshbuf_put_cstring(msg, extension_type)) != 0)
+		goto out;
+
+	if ((r = ssh_request_reply(sock, msg, msg)) != 0)
+		goto out;
+
+	/* Get message type, and verify that we got a proper answer. */
+	if ((r = sshbuf_get_u8(msg, &type)) != 0)
+		goto out;
+	if (type != SSH_AGENT_SUCCESS)
+		return decode_reply(type);
+
+	/* Check if request_identities_filtered@trezor.io is supported */
+	if ((r = sshbuf_get_cstring(msg, &extension_type, NULL)) != 0)
+		goto out;
+	if (strstr(extension_type, f) == NULL)
+		return SSH_ERR_AGENT_FAILURE;
+	r = decode_reply(type);
+	debug("%s: supported extensions: %s", __func__, extension_type);
+ out:
+	sshbuf_free(msg);
+	return r;
+}
+
+/*
+ * Send extension message 'request_identities_filtered@trezor.io'.
+ * Fetch filtered list of identities held by agent.
+ */
+int
+ssh_fetch_identitylist_filtered(int sock,  const char *user, const char *host,
+		struct ssh_identitylist **idlp)
+{
+	int r;
+	u_char type;
+	u_int32_t num, i;
+	struct ssh_identitylist *idl = NULL;
+        char *extension_type = "request_identities_filtered@trezor.io";
+	struct sshbuf *c;
+	struct sshbuf *msg;
+
+	/* Assemble content of message  */
+	if ((c = sshbuf_new()) == NULL)
+		return SSH_ERR_ALLOC_FAIL;
+	if ((r = sshbuf_put_cstring(c, user)) != 0 ||
+	    (r = sshbuf_put_cstring(c, host)) != 0)
+		goto out;
+
+	/*
+	 * Send extension message to the agent requesting sending filtered
+	 * identity list
+	 */
+	debug("%s:  %s@%s", __func__, user, host);
+	if ((msg = sshbuf_new()) == NULL){
+		sshbuf_free(c);
+		return SSH_ERR_ALLOC_FAIL;
+	}
+	if ((r = sshbuf_put_u8(msg, SSH_AGENTC_EXTENSION)) != 0 ||
+	    (r = sshbuf_put_cstring(msg, extension_type)) != 0 ||
+	    (r = sshbuf_put_string(msg, sshbuf_ptr(c), sshbuf_len(c))) != 0)
+		goto out;
+	if ((r = ssh_request_reply(sock, msg, msg)) != 0)
+		goto out;
+
+	/* Get message type, and verify that we got a proper answer. */
+	if ((r = sshbuf_get_u8(msg, &type)) != 0)
+		goto out;
+	if (agent_failed(type)) {
+		r = SSH_ERR_AGENT_FAILURE;
+		goto out;
+	} else if (type != SSH2_AGENT_IDENTITIES_ANSWER) {
+		r = SSH_ERR_INVALID_FORMAT;
+		goto out;
+	}
+
+	/* Get the number of entries in the response and check it for sanity. */
+	if ((r = sshbuf_get_u32(msg, &num)) != 0)
+		goto out;
+	if (num > MAX_AGENT_IDENTITIES) {
+		r = SSH_ERR_INVALID_FORMAT;
+		goto out;
+	}
+	if (num == 0) {
+		r = SSH_ERR_AGENT_NO_IDENTITIES;
+		goto out;
+	}
+
+	/* Deserialise the response into a list of keys/comments */
+	if ((idl = calloc(1, sizeof(*idl))) == NULL ||
+	    (idl->keys = calloc(num, sizeof(*idl->keys))) == NULL ||
+	    (idl->comments = calloc(num, sizeof(*idl->comments))) == NULL) {
+		r = SSH_ERR_ALLOC_FAIL;
+		goto out;
+	}
+	for (i = 0; i < num;) {
+		if ((r = deserialise_identity2(msg, &(idl->keys[i]),
+		    &(idl->comments[i]))) != 0) {
+			if (r == SSH_ERR_KEY_TYPE_UNKNOWN) {
+				/* Gracefully skip unknown key types */
+				num--;
+				continue;
+			} else
+				goto out;
+		}
+		i++;
+	}
+	idl->nkeys = num;
+	*idlp = idl;
+	idl = NULL;
+	r = 0;
+ out:
+	sshbuf_free(c);
+	sshbuf_free(msg);
+	if (idl != NULL)
+		ssh_free_identitylist(idl);
+	return r;
+}
+
+/*
  * Fetch list of identities held by the agent.
  */
 int
