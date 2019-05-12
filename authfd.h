@@ -27,6 +27,9 @@ int	ssh_get_authentication_socket(int *fdp);
 void	ssh_close_authentication_socket(int sock);
 
 int	ssh_lock_agent(int sock, int lock, const char *password);
+int	ssh_check_identities_filtered_support(int sock);
+int	ssh_fetch_identitylist_filtered(int sock,  const char *user, 
+		const char *host, struct ssh_identitylist **idlp);
 int	ssh_fetch_identitylist(int sock, struct ssh_identitylist **idlp);
 void	ssh_free_identitylist(struct ssh_identitylist *idl);
 int	ssh_add_identity_constrained(int sock, const struct sshkey *key,
@@ -72,6 +75,10 @@ int	ssh_agent_sign(int sock, const struct sshkey *key,
 #define SSH_AGENTC_ADD_RSA_ID_CONSTRAINED	24
 #define SSH2_AGENTC_ADD_ID_CONSTRAINED		25
 #define SSH_AGENTC_ADD_SMARTCARD_KEY_CONSTRAINED 26
+
+/* extension mechanism */
+#define SSH_AGENTC_EXTENSION			27
+#define SSH_AGENT_EXTENSION_FAILURE		28
 
 #define	SSH_AGENT_CONSTRAIN_LIFETIME		1
 #define	SSH_AGENT_CONSTRAIN_CONFIRM		2

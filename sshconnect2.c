@@ -379,7 +379,6 @@ ssh_userauth2(const char *local_user, const char *server_user, char *host,
 
 	/* setup authentication context */
 	memset(&authctxt, 0, sizeof(authctxt));
-	pubkey_prepare(&authctxt);
 	authctxt.server_user = server_user;
 	authctxt.local_user = local_user;
 	authctxt.host = host;
@@ -392,6 +391,7 @@ ssh_userauth2(const char *local_user, const char *server_user, char *host,
 	authctxt.active_ktype = authctxt.oktypes = authctxt.ktypes = NULL;
 	authctxt.info_req_seen = 0;
 	authctxt.agent_fd = -1;
+	pubkey_prepare(&authctxt);
 	if (authctxt.method == NULL)
 		fatal("ssh_userauth2: internal error: cannot send userauth none request");
 
@@ -1489,10 +1489,13 @@ pubkey_prepare(Authctxt *authctxt)
 	size_t j;
 	struct ssh_identitylist *idlist;
 	char *ident;
+	const char *user, *host;
 
 	TAILQ_INIT(&agent);	/* keys from the agent */
 	TAILQ_INIT(&files);	/* keys from the config file */
 	preferred = &authctxt->keys;
+	user = authctxt->server_user;
+	host = authctxt->host;
 	TAILQ_INIT(preferred);	/* preferred order of keys */
 
 	/* list of keys stored in the filesystem and PKCS#11 */
@@ -1526,12 +1529,31 @@ pubkey_prepare(Authctxt *authctxt)
 		if (r != SSH_ERR_AGENT_NOT_PRESENT)
 			debug("%s: ssh_get_authentication_socket: %s",
 			    __func__, ssh_err(r));
-	} else if ((r = ssh_fetch_identitylist(agent_fd, &idlist)) != 0) {
-		if (r != SSH_ERR_AGENT_NO_IDENTITIES)
-			debug("%s: ssh_fetch_identitylist: %s",
-			    __func__, ssh_err(r));
-		close(agent_fd);
+                goto skip_agent;
+        }
+        if ((r = ssh_check_identities_filtered_support(agent_fd)) != 0){
+                debug("%s: ssh_check_filter_extension_support: %s",
+                __func__, ssh_err(r));
+		goto skip_filter;
+	} else if ((r = ssh_fetch_identitylist_filtered(agent_fd, user, host, 
+					&idlist)) != 0){
+               	if (r != SSH_ERR_AGENT_NO_IDENTITIES)
+                       	debug("%s: ssh_fetch_identitylist: %s",
+                        __func__, ssh_err(r));
+                close(agent_fd);
+		goto skip_agent;
 	} else {
+		goto process_list;
+	}
+ skip_filter:
+
+	if ((r = ssh_fetch_identitylist(agent_fd, &idlist)) != 0) {
+               	if (r != SSH_ERR_AGENT_NO_IDENTITIES)
+                       	debug("%s: ssh_fetch_identitylist: %s",
+                        __func__, ssh_err(r));
+                close(agent_fd);
+	} else {
+ process_list:
 		for (j = 0; j < idlist->nkeys; j++) {
 			found = 0;
 			TAILQ_FOREACH(id, &files, next) {
@@ -1566,6 +1588,8 @@ pubkey_prepare(Authctxt *authctxt)
 		}
 		authctxt->agent_fd = agent_fd;
 	}
+ skip_agent:
+
 	/* Prefer PKCS11 keys that are explicitly listed */
 	TAILQ_FOREACH_SAFE(id, &files, next, tmp) {
 		if (id->key == NULL || (id->key->flags & SSHKEY_FLAG_EXT) == 0)
